@@ -2,6 +2,7 @@
   "name": "strapi-v5-backup",
   "version": "1.0.0",
   "main": "strapi-server.js",
+  "author": "Szymon Pielat",
   "strapi": {
     "name": "strapi-v5-backup",
     "kind": "plugin"
