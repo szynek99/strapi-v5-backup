@@ -4,7 +4,7 @@ const cron = require('node-cron');
 const backupServiceFactory = require('./services/backup');
 
 module.exports = (strapi) => {
-    const config = strapi.config.get('plugin.db-backup', {});
+    const config = strapi.config.get('plugin.strapi-v5-backup', {});
 
     const {
         enabled = true,
