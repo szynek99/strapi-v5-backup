@@ -13,7 +13,7 @@ module.exports = (strapi) => {
         database,
         aws,
     } = config;
-    strapi.log.info(config);
+    strapi.log.info(JSON.stringify(config, null, 2));
 
     if (!enabled) {
         strapi.log.info('[db-backup] Plugin disabled by config');
