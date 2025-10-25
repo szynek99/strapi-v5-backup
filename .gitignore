@@ -1,0 +1,50 @@
+# ============================
+# Node & build artefacts
+# ============================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+yarn.lock
+.pnpm-debug.log
+
+# ============================
+# Environment / config files
+# ============================
+.env
+.env.local
+.env.*.local
+
+# ============================
+# Editor & OS junk
+# ============================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ============================
+# Strapi & Plugin build artefacts
+# ============================
+/dist
+/build
+/.cache
+/.tmp
+/tmp
+
+# ============================
+# Logs
+# ============================
+logs
+*.log
+
+# ============================
+# Backup files (just in case)
+# ============================
+*.dump
+*.sql
+backups/
