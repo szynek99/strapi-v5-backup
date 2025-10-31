@@ -20,22 +20,28 @@ module.exports = (strapi) => {
     }
 
     if (!database || !aws) {
-        strapi.log.error('[db-backup] Missing database or AWS configuration!');
+        strapi.log.error('[db-backup] ❌ Missing database or AWS configuration! Backup will not start.');
         return;
     }
 
     const backupService = backupServiceFactory({ strapi, database, aws, retentionDays });
 
-    strapi.log.info(`[db-backup] Schedule: ${cronExpr}, Retention: ${retentionDays} days`);
+    strapi.log.info(`[db-backup] ✅ Schedule: ${cronExpr}, Retention: ${retentionDays} days`);
 
-    cron.schedule(cronExpr, async () => {
-        try {
-            strapi.log.info('[db-backup] Starting backup job...');
-            await backupService.runBackup();
-            await backupService.cleanupOldBackups();
-            strapi.log.info('[db-backup] Backup job completed.');
-        } catch (err) {
-            strapi.log.error(`[db-backup] Backup failed: ${err.message}`);
-        }
-    });
+    try {
+        cron.schedule(cronExpr, async () => {
+            strapi.log.info('[db-backup] 🕒 Scheduled backup job triggered.');
+
+            try {
+                await backupService.runBackup();
+                await backupService.cleanupOldBackups();
+                strapi.log.info('[db-backup] ✅ Backup job completed successfully.');
+            } catch (err) {
+                strapi.log.error(`[db-backup] ❌ Backup job failed: ${err.message}`);
+                if (err.stack) strapi.log.debug(err.stack);
+            }
+        });
+    } catch (err) {
+        strapi.log.error(`[db-backup] ❌ Failed to schedule backup: ${err.message}`);
+    }
 };
