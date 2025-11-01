@@ -3,16 +3,30 @@
 const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const AWS = require('aws-sdk');
+const zlib = require('zlib');
+const {
+    S3Client,
+    PutObjectCommand,
+    DeleteObjectCommand,
+    ListObjectsV2Command,
+} = require('@aws-sdk/client-s3');
 
 module.exports = ({ strapi, database, aws, retentionDays }) => ({
     async runBackup() {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const fileName = `backup-${timestamp}.dump`;
+        const gzFileName = `${fileName}.gz`;
         const tempPath = path.join(__dirname, fileName);
+        const gzTempPath = path.join(__dirname, gzFileName);
 
         const { host, port, name, user, password } = database || {};
-        const { bucket, region, accessKeyId, secretAccessKey, prefix = 'backups/' } = aws || {};
+        const {
+            bucket,
+            region,
+            accessKeyId,
+            secretAccessKey,
+            prefix = 'backups/',
+        } = aws || {};
 
         if (!host || !port || !name || !user || !password) {
             throw new Error('Invalid or incomplete database configuration.');
@@ -37,51 +51,99 @@ module.exports = ({ strapi, database, aws, retentionDays }) => ({
                 }
             });
 
-            proc.stdout?.on('data', (data) => strapi.log.debug(`[pg_dump] ${data.trim()}`));
-            proc.stderr?.on('data', (data) => strapi.log.debug(`[pg_dump:stderr] ${data.trim()}`));
+            proc.stdout?.on('data', (data) =>
+                strapi.log.debug(`[pg_dump] ${data.trim()}`)
+            );
+            proc.stderr?.on('data', (data) =>
+                strapi.log.debug(`[pg_dump:stderr] ${data.trim()}`)
+            );
         });
 
-        const s3 = new AWS.S3({ accessKeyId, secretAccessKey, region });
+        strapi.log.info(`[db-backup] 🗜️ Compressing backup file...`);
+        await new Promise((resolve, reject) => {
+            const gzip = zlib.createGzip();
+            const input = fs.createReadStream(tempPath);
+            const output = fs.createWriteStream(gzTempPath);
+
+            input
+                .pipe(gzip)
+                .pipe(output)
+                .on('finish', () => {
+                    strapi.log.info('[db-backup] ✅ Compression completed.');
+                    resolve();
+                })
+                .on('error', (err) => {
+                    strapi.log.error(`[db-backup] ❌ Compression failed: ${err.message}`);
+                    reject(err);
+                });
+        });
+
+        const s3 = new S3Client({
+            region,
+            credentials: { accessKeyId, secretAccessKey },
+        });
 
         try {
-            const fileContent = fs.readFileSync(tempPath);
-            strapi.log.info(`[db-backup] 📤 Uploading ${fileName} to S3...`);
+            const fileStream = fs.createReadStream(gzTempPath);
+            const s3Key = `${prefix}${gzFileName}`;
+            strapi.log.info(`[db-backup] 📤 Uploading ${gzFileName} to S3...`);
 
-            await s3.upload({
-                Bucket: bucket,
-                Key: `${prefix}${fileName}`,
-                Body: fileContent,
-            }).promise();
+            await s3.send(
+                new PutObjectCommand({
+                    Bucket: bucket,
+                    Key: s3Key,
+                    Body: fileStream,
+                    ContentType: 'application/gzip',
+                    ContentEncoding: 'gzip',
+                })
+            );
 
-            strapi.log.info(`[db-backup] ✅ Backup uploaded: s3://${bucket}/${prefix}${fileName}`);
+            strapi.log.info(`[db-backup] ✅ Backup uploaded: s3://${bucket}/${s3Key}`);
         } catch (err) {
             strapi.log.error(`[db-backup] ❌ Upload failed: ${err.message}`);
             throw err;
         } finally {
-            try {
-                if (fs.existsSync(tempPath)) {
-                    fs.unlinkSync(tempPath);
-                    strapi.log.debug(`[db-backup] 🧹 Temporary file removed: ${tempPath}`);
+            for (const file of [tempPath, gzTempPath]) {
+                try {
+                    if (fs.existsSync(file)) {
+                        fs.unlinkSync(file);
+                        strapi.log.debug(`[db-backup] 🧹 Removed temporary file: ${file}`);
+                    }
+                } catch (cleanupErr) {
+                    strapi.log.warn(
+                        `[db-backup] ⚠️ Failed to delete temp file ${file}: ${cleanupErr.message}`
+                    );
                 }
-            } catch (cleanupErr) {
-                strapi.log.warn(`[db-backup] ⚠️ Failed to delete temporary file: ${cleanupErr.message}`);
             }
         }
 
-        return `s3://${bucket}/${prefix}${fileName}`;
+        return `s3://${bucket}/${prefix}${gzFileName}`;
     },
 
     async cleanupOldBackups() {
-        const { bucket, region, accessKeyId, secretAccessKey, prefix = 'backups/' } = aws;
+        const {
+            bucket,
+            region,
+            accessKeyId,
+            secretAccessKey,
+            prefix = 'backups/',
+        } = aws;
         const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
         const now = Date.now();
 
-        strapi.log.info(`[db-backup] 🧹 Cleaning up backups older than ${retentionDays} days...`);
+        strapi.log.info(
+            `[db-backup] 🧹 Cleaning up backups older than ${retentionDays} days...`
+        );
 
-        const s3 = new AWS.S3({ accessKeyId, secretAccessKey, region });
+        const s3 = new S3Client({
+            region,
+            credentials: { accessKeyId, secretAccessKey },
+        });
 
         try {
-            const list = await s3.listObjectsV2({ Bucket: bucket, Prefix: prefix }).promise();
+            const list = await s3.send(
+                new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix })
+            );
 
             const oldBackups = (list.Contents || []).filter((obj) => {
                 const age = now - new Date(obj.LastModified).getTime();
@@ -95,10 +157,14 @@ module.exports = ({ strapi, database, aws, retentionDays }) => ({
 
             for (const file of oldBackups) {
                 try {
-                    await s3.deleteObject({ Bucket: bucket, Key: file.Key }).promise();
+                    await s3.send(
+                        new DeleteObjectCommand({ Bucket: bucket, Key: file.Key })
+                    );
                     strapi.log.info(`[db-backup] 🗑️ Deleted old backup: ${file.Key}`);
                 } catch (err) {
-                    strapi.log.error(`[db-backup] ⚠️ Failed to delete ${file.Key}: ${err.message}`);
+                    strapi.log.error(
+                        `[db-backup] ⚠️ Failed to delete ${file.Key}: ${err.message}`
+                    );
                 }
             }
         } catch (err) {
